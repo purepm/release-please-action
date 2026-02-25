@@ -94700,6 +94700,331 @@ try {
 
 /***/ }),
 
+/***/ 6144:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+// Copyright 2023 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.internals = exports.main = void 0;
+const core = __nccwpck_require__(42186);
+const release_please_1 = __nccwpck_require__(24363);
+const fs = __nccwpck_require__(73292);
+const os = __nccwpck_require__(22037);
+const path = __nccwpck_require__(71017);
+const child_process_1 = __nccwpck_require__(32081);
+const util_1 = __nccwpck_require__(73837);
+const DEFAULT_CONFIG_FILE = 'release-please-config.json';
+const DEFAULT_MANIFEST_FILE = '.release-please-manifest.json';
+const DEFAULT_GITHUB_API_URL = 'https://api.github.com';
+const DEFAULT_GITHUB_GRAPHQL_URL = 'https://api.github.com';
+const DEFAULT_GITHUB_SERVER_URL = 'https://github.com';
+const DEFAULT_SIGNING_BOT_NAME = 'release-please[bot]';
+const DEFAULT_SIGNING_BOT_EMAIL = 'release-please[bot]@users.noreply.github.com';
+const execFile = (0, util_1.promisify)(child_process_1.execFile);
+function parseInputs() {
+    const inputs = {
+        token: core.getInput('token', { required: true }),
+        releaseType: getOptionalInput('release-type'),
+        path: getOptionalInput('path'),
+        repoUrl: core.getInput('repo-url') || process.env.GITHUB_REPOSITORY || '',
+        targetBranch: getOptionalInput('target-branch'),
+        configFile: core.getInput('config-file') || DEFAULT_CONFIG_FILE,
+        manifestFile: core.getInput('manifest-file') || DEFAULT_MANIFEST_FILE,
+        githubApiUrl: core.getInput('github-api-url') || DEFAULT_GITHUB_API_URL,
+        githubGraphqlUrl: (core.getInput('github-graphql-url') || '').replace(/\/graphql$/, '') ||
+            DEFAULT_GITHUB_GRAPHQL_URL,
+        proxyServer: getOptionalInput('proxy-server'),
+        skipGitHubRelease: getOptionalBooleanInput('skip-github-release'),
+        skipGitHubPullRequest: getOptionalBooleanInput('skip-github-pull-request'),
+        skipLabeling: getOptionalBooleanInput('skip-labeling'),
+        fork: getOptionalBooleanInput('fork'),
+        includeComponentInTag: getOptionalBooleanInput('include-component-in-tag'),
+        changelogHost: core.getInput('changelog-host') || DEFAULT_GITHUB_SERVER_URL,
+        versioningStrategy: getOptionalInput('versioning-strategy'),
+        releaseAs: getOptionalInput('release-as'),
+        signCommits: getOptionalBooleanInput('sign-commits'),
+        gpgPrivateKey: getOptionalInput('gpg-private-key'),
+        gpgPassphrase: getOptionalInput('gpg-passphrase'),
+        gitCommitterName: getOptionalInput('git-committer-name'),
+        gitCommitterEmail: getOptionalInput('git-committer-email'),
+    };
+    return inputs;
+}
+function getOptionalInput(name) {
+    return core.getInput(name) || undefined;
+}
+function getOptionalBooleanInput(name) {
+    const val = core.getInput(name);
+    if (val === '' || val === undefined) {
+        return undefined;
+    }
+    return core.getBooleanInput(name);
+}
+function isDefined(value) {
+    return value !== undefined;
+}
+function loadOrBuildManifest(github, inputs) {
+    if (inputs.releaseType) {
+        core.debug('Building manifest from config');
+        return release_please_1.Manifest.fromConfig(github, github.repository.defaultBranch, {
+            releaseType: inputs.releaseType,
+            includeComponentInTag: inputs.includeComponentInTag,
+            changelogHost: inputs.changelogHost,
+            versioning: inputs.versioningStrategy,
+            releaseAs: inputs.releaseAs,
+        }, {
+            fork: inputs.fork,
+            skipLabeling: inputs.skipLabeling,
+        }, inputs.path);
+    }
+    const manifestOverrides = inputs.fork || inputs.skipLabeling
+        ? {
+            fork: inputs.fork,
+            skipLabeling: inputs.skipLabeling,
+        }
+        : {};
+    core.debug('Loading manifest from config file');
+    return release_please_1.Manifest.fromManifest(github, github.repository.defaultBranch, inputs.configFile, inputs.manifestFile, manifestOverrides).then(manifest => {
+        // Override changelogHost for all paths if provided as action input and different from default
+        if (inputs.changelogHost && inputs.changelogHost !== DEFAULT_GITHUB_SERVER_URL) {
+            core.debug(`Overriding changelogHost to: ${inputs.changelogHost}`);
+            for (const path in manifest.repositoryConfig) {
+                manifest.repositoryConfig[path].changelogHost = inputs.changelogHost;
+            }
+        }
+        return manifest;
+    });
+}
+async function main(fetchOverride) {
+    core.info(`Running release-please version: ${release_please_1.VERSION}`);
+    const inputs = parseInputs();
+    validateSigningInputs(inputs);
+    const github = await getGitHubInstance(inputs, fetchOverride);
+    if (!inputs.skipGitHubRelease) {
+        const manifest = await loadOrBuildManifest(github, inputs);
+        core.debug('Creating releases');
+        outputReleases(await manifest.createReleases());
+    }
+    if (!inputs.skipGitHubPullRequest) {
+        const manifest = await loadOrBuildManifest(github, inputs);
+        core.debug('Creating pull requests');
+        const prs = await manifest.createPullRequests();
+        if (inputs.signCommits) {
+            await exports.internals.signReleasePleaseBranchCommits(inputs, prs);
+        }
+        outputPRs(prs);
+    }
+}
+exports.main = main;
+function validateSigningInputs(inputs) {
+    if (!inputs.signCommits)
+        return;
+    if (!inputs.gpgPrivateKey) {
+        throw new Error('gpg-private-key must be provided when sign-commits is true');
+    }
+}
+async function runCommand(command, args, options = {}) {
+    const { stdout, stderr } = await execFile(command, args, {
+        cwd: options.cwd,
+        env: options.env,
+        encoding: 'utf8',
+    });
+    return { stdout, stderr };
+}
+function getSigningKeyFingerprint(listOutput) {
+    for (const line of listOutput.split('\n')) {
+        const parts = line.split(':');
+        if (parts[0] === 'fpr' && parts[9])
+            return parts[9];
+    }
+    throw new Error('Could not detect imported GPG key fingerprint');
+}
+function getRemoteUrl(inputs) {
+    const serverUrl = process.env.GITHUB_SERVER_URL || DEFAULT_GITHUB_SERVER_URL;
+    const parsedServerUrl = new URL(serverUrl);
+    const repoPath = inputs.repoUrl.replace(/\.git$/, '');
+    return `${parsedServerUrl.protocol}//${parsedServerUrl.host}/${repoPath}.git`;
+}
+async function signReleasePleaseBranchCommits(inputs, prs) {
+    const branchNames = Array.from(new Set(prs
+        .filter(isDefined)
+        .map(pr => pr.headBranchName)
+        .filter((branchName) => Boolean(branchName))));
+    if (!branchNames.length) {
+        core.info('No release-please branch commits to sign');
+        return;
+    }
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'release-please-signing-'));
+    const gnupgHome = path.join(tmpDir, 'gnupg');
+    const repoDir = path.join(tmpDir, 'repo');
+    const keyFile = path.join(tmpDir, 'private.key');
+    const gpgWrapperPath = path.join(tmpDir, 'gpg-wrapper.sh');
+    const passphraseFile = path.join(tmpDir, 'passphrase.txt');
+    const gitAskpassPath = path.join(tmpDir, 'git-askpass.sh');
+    try {
+        await fs.mkdir(gnupgHome, { mode: 0o700 });
+        await fs.mkdir(repoDir);
+        await fs.writeFile(keyFile, inputs.gpgPrivateKey || '', { mode: 0o600 });
+        const gpgEnv = {
+            ...process.env,
+            GNUPGHOME: gnupgHome,
+        };
+        await fs.writeFile(gitAskpassPath, '#!/bin/sh\n' +
+            'case "$1" in\n' +
+            '  *Username*) echo "x-access-token" ;;\n' +
+            '  *) echo "$RELEASE_PLEASE_TOKEN" ;;\n' +
+            'esac\n', { mode: 0o700 });
+        gpgEnv.RELEASE_PLEASE_TOKEN = inputs.token;
+        gpgEnv.GIT_ASKPASS = gitAskpassPath;
+        gpgEnv.GIT_TERMINAL_PROMPT = '0';
+        await runCommand('gpg', ['--batch', '--import', keyFile], { env: gpgEnv });
+        const { stdout: keyListOutput } = await runCommand('gpg', ['--batch', '--list-secret-keys', '--with-colons', '--fingerprint'], { env: gpgEnv });
+        const signingKeyFingerprint = getSigningKeyFingerprint(keyListOutput);
+        let gpgProgram = 'gpg';
+        if (inputs.gpgPassphrase) {
+            await fs.writeFile(passphraseFile, inputs.gpgPassphrase, { mode: 0o600 });
+            await fs.writeFile(gpgWrapperPath, '#!/bin/sh\nexec gpg --batch --pinentry-mode loopback --passphrase-file "$GPG_PASSPHRASE_FILE" "$@"\n', { mode: 0o700 });
+            gpgProgram = gpgWrapperPath;
+            gpgEnv.GPG_PASSPHRASE_FILE = passphraseFile;
+        }
+        await runCommand('git', ['init', '.'], { cwd: repoDir, env: gpgEnv });
+        await runCommand('git', ['config', 'user.name', inputs.gitCommitterName || DEFAULT_SIGNING_BOT_NAME], {
+            cwd: repoDir,
+            env: gpgEnv,
+        });
+        await runCommand('git', ['config', 'user.email', inputs.gitCommitterEmail || DEFAULT_SIGNING_BOT_EMAIL], {
+            cwd: repoDir,
+            env: gpgEnv,
+        });
+        await runCommand('git', ['config', 'user.signingkey', signingKeyFingerprint], {
+            cwd: repoDir,
+            env: gpgEnv,
+        });
+        await runCommand('git', ['config', 'gpg.program', gpgProgram], { cwd: repoDir, env: gpgEnv });
+        await runCommand('git', ['config', 'commit.gpgsign', 'true'], { cwd: repoDir, env: gpgEnv });
+        await runCommand('git', ['remote', 'add', 'origin', getRemoteUrl(inputs)], {
+            cwd: repoDir,
+            env: gpgEnv,
+        });
+        for (const branchName of branchNames) {
+            core.info(`Signing latest commit on branch ${branchName}`);
+            await runCommand('git', ['fetch', '--depth=2', 'origin', branchName], { cwd: repoDir, env: gpgEnv });
+            await runCommand('git', ['checkout', '--detach', 'FETCH_HEAD'], { cwd: repoDir, env: gpgEnv });
+            await runCommand('git', ['commit', '--amend', '--no-edit', '--gpg-sign'], {
+                cwd: repoDir,
+                env: gpgEnv,
+            });
+            await runCommand('git', ['push', '--force-with-lease', 'origin', `HEAD:${branchName}`], {
+                cwd: repoDir,
+                env: gpgEnv,
+            });
+        }
+    }
+    finally {
+        await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+}
+exports.internals = {
+    runCommand,
+    signReleasePleaseBranchCommits,
+};
+function getGitHubInstance(inputs, fetchOverride) {
+    const [owner, repo] = inputs.repoUrl.split('/');
+    let proxy = undefined;
+    if (inputs.proxyServer) {
+        const [host, port] = inputs.proxyServer.split(':');
+        proxy = {
+            host,
+            port: parseInt(port),
+        };
+    }
+    const githubCreateOpts = {
+        proxy,
+        owner,
+        repo,
+        apiUrl: inputs.githubApiUrl,
+        graphqlUrl: inputs.githubGraphqlUrl,
+        token: inputs.token,
+        defaultBranch: inputs.targetBranch,
+        fetch: fetchOverride,
+    };
+    return release_please_1.GitHub.create(githubCreateOpts);
+}
+function setPathOutput(path, key, value) {
+    if (path === '.') {
+        core.setOutput(key, value);
+    }
+    else {
+        core.setOutput(`${path}--${key}`, value);
+    }
+}
+function outputReleases(releases) {
+    releases = releases.filter(release => release !== undefined);
+    const pathsReleased = [];
+    core.setOutput('releases_created', releases.length > 0);
+    if (releases.length) {
+        for (const release of releases) {
+            if (!release) {
+                continue;
+            }
+            const path = release.path || '.';
+            if (path) {
+                pathsReleased.push(path);
+                // If the special root release is set (representing project root)
+                // and this is explicitly a manifest release, set the release_created boolean.
+                setPathOutput(path, 'release_created', true);
+            }
+            for (const [rawKey, value] of Object.entries(release)) {
+                let key = rawKey;
+                // Historically tagName was output as tag_name, keep this
+                // consistent to avoid breaking change:
+                if (key === 'tagName')
+                    key = 'tag_name';
+                if (key === 'uploadUrl')
+                    key = 'upload_url';
+                if (key === 'notes')
+                    key = 'body';
+                if (key === 'url')
+                    key = 'html_url';
+                setPathOutput(path, key, value);
+            }
+        }
+    }
+    // Paths of all releases that were created, so that they can be passed
+    // to matrix in next step:
+    core.setOutput('paths_released', JSON.stringify(pathsReleased));
+}
+function outputPRs(prs) {
+    prs = prs.filter(pr => pr !== undefined);
+    core.setOutput('prs_created', prs.length > 0);
+    if (prs.length) {
+        core.setOutput('pr', prs[0]);
+        core.setOutput('prs', JSON.stringify(prs));
+    }
+}
+if (require.main === require.cache[eval('__filename')]) {
+    main().catch(err => {
+        core.setFailed(`release-please failed: ${err.message}`);
+    });
+}
+
+
+/***/ }),
+
 /***/ 39491:
 /***/ ((module) => {
 
@@ -94769,6 +95094,14 @@ module.exports = require("events");
 
 "use strict";
 module.exports = require("fs");
+
+/***/ }),
+
+/***/ 73292:
+/***/ ((module) => {
+
+"use strict";
+module.exports = require("fs/promises");
 
 /***/ }),
 
@@ -105531,198 +105864,12 @@ module.exports = JSON.parse('{"$schema":"http://json-schema.org/draft-07/schema#
 /******/ 	if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = __dirname + "/";
 /******/ 	
 /************************************************************************/
-var __webpack_exports__ = {};
-// This entry need to be wrapped in an IIFE because it need to be in strict mode.
-(() => {
-"use strict";
-var exports = __webpack_exports__;
-
-// Copyright 2023 Google LLC
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     https://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.main = void 0;
-const core = __nccwpck_require__(42186);
-const release_please_1 = __nccwpck_require__(24363);
-const DEFAULT_CONFIG_FILE = 'release-please-config.json';
-const DEFAULT_MANIFEST_FILE = '.release-please-manifest.json';
-const DEFAULT_GITHUB_API_URL = 'https://api.github.com';
-const DEFAULT_GITHUB_GRAPHQL_URL = 'https://api.github.com';
-const DEFAULT_GITHUB_SERVER_URL = 'https://github.com';
-function parseInputs() {
-    const inputs = {
-        token: core.getInput('token', { required: true }),
-        releaseType: getOptionalInput('release-type'),
-        path: getOptionalInput('path'),
-        repoUrl: core.getInput('repo-url') || process.env.GITHUB_REPOSITORY || '',
-        targetBranch: getOptionalInput('target-branch'),
-        configFile: core.getInput('config-file') || DEFAULT_CONFIG_FILE,
-        manifestFile: core.getInput('manifest-file') || DEFAULT_MANIFEST_FILE,
-        githubApiUrl: core.getInput('github-api-url') || DEFAULT_GITHUB_API_URL,
-        githubGraphqlUrl: (core.getInput('github-graphql-url') || '').replace(/\/graphql$/, '') ||
-            DEFAULT_GITHUB_GRAPHQL_URL,
-        proxyServer: getOptionalInput('proxy-server'),
-        skipGitHubRelease: getOptionalBooleanInput('skip-github-release'),
-        skipGitHubPullRequest: getOptionalBooleanInput('skip-github-pull-request'),
-        skipLabeling: getOptionalBooleanInput('skip-labeling'),
-        fork: getOptionalBooleanInput('fork'),
-        includeComponentInTag: getOptionalBooleanInput('include-component-in-tag'),
-        changelogHost: core.getInput('changelog-host') || DEFAULT_GITHUB_SERVER_URL,
-        versioningStrategy: getOptionalInput('versioning-strategy'),
-        releaseAs: getOptionalInput('release-as'),
-    };
-    return inputs;
-}
-function getOptionalInput(name) {
-    return core.getInput(name) || undefined;
-}
-function getOptionalBooleanInput(name) {
-    const val = core.getInput(name);
-    if (val === '' || val === undefined) {
-        return undefined;
-    }
-    return core.getBooleanInput(name);
-}
-function loadOrBuildManifest(github, inputs) {
-    if (inputs.releaseType) {
-        core.debug('Building manifest from config');
-        return release_please_1.Manifest.fromConfig(github, github.repository.defaultBranch, {
-            releaseType: inputs.releaseType,
-            includeComponentInTag: inputs.includeComponentInTag,
-            changelogHost: inputs.changelogHost,
-            versioning: inputs.versioningStrategy,
-            releaseAs: inputs.releaseAs,
-        }, {
-            fork: inputs.fork,
-            skipLabeling: inputs.skipLabeling,
-        }, inputs.path);
-    }
-    const manifestOverrides = inputs.fork || inputs.skipLabeling
-        ? {
-            fork: inputs.fork,
-            skipLabeling: inputs.skipLabeling,
-        }
-        : {};
-    core.debug('Loading manifest from config file');
-    return release_please_1.Manifest.fromManifest(github, github.repository.defaultBranch, inputs.configFile, inputs.manifestFile, manifestOverrides).then(manifest => {
-        // Override changelogHost for all paths if provided as action input and different from default
-        if (inputs.changelogHost && inputs.changelogHost !== DEFAULT_GITHUB_SERVER_URL) {
-            core.debug(`Overriding changelogHost to: ${inputs.changelogHost}`);
-            for (const path in manifest.repositoryConfig) {
-                manifest.repositoryConfig[path].changelogHost = inputs.changelogHost;
-            }
-        }
-        return manifest;
-    });
-}
-async function main(fetchOverride) {
-    core.info(`Running release-please version: ${release_please_1.VERSION}`);
-    const inputs = parseInputs();
-    const github = await getGitHubInstance(inputs, fetchOverride);
-    if (!inputs.skipGitHubRelease) {
-        const manifest = await loadOrBuildManifest(github, inputs);
-        core.debug('Creating releases');
-        outputReleases(await manifest.createReleases());
-    }
-    if (!inputs.skipGitHubPullRequest) {
-        const manifest = await loadOrBuildManifest(github, inputs);
-        core.debug('Creating pull requests');
-        outputPRs(await manifest.createPullRequests());
-    }
-}
-exports.main = main;
-function getGitHubInstance(inputs, fetchOverride) {
-    const [owner, repo] = inputs.repoUrl.split('/');
-    let proxy = undefined;
-    if (inputs.proxyServer) {
-        const [host, port] = inputs.proxyServer.split(':');
-        proxy = {
-            host,
-            port: parseInt(port),
-        };
-    }
-    const githubCreateOpts = {
-        proxy,
-        owner,
-        repo,
-        apiUrl: inputs.githubApiUrl,
-        graphqlUrl: inputs.githubGraphqlUrl,
-        token: inputs.token,
-        defaultBranch: inputs.targetBranch,
-        fetch: fetchOverride,
-    };
-    return release_please_1.GitHub.create(githubCreateOpts);
-}
-function setPathOutput(path, key, value) {
-    if (path === '.') {
-        core.setOutput(key, value);
-    }
-    else {
-        core.setOutput(`${path}--${key}`, value);
-    }
-}
-function outputReleases(releases) {
-    releases = releases.filter(release => release !== undefined);
-    const pathsReleased = [];
-    core.setOutput('releases_created', releases.length > 0);
-    if (releases.length) {
-        for (const release of releases) {
-            if (!release) {
-                continue;
-            }
-            const path = release.path || '.';
-            if (path) {
-                pathsReleased.push(path);
-                // If the special root release is set (representing project root)
-                // and this is explicitly a manifest release, set the release_created boolean.
-                setPathOutput(path, 'release_created', true);
-            }
-            for (const [rawKey, value] of Object.entries(release)) {
-                let key = rawKey;
-                // Historically tagName was output as tag_name, keep this
-                // consistent to avoid breaking change:
-                if (key === 'tagName')
-                    key = 'tag_name';
-                if (key === 'uploadUrl')
-                    key = 'upload_url';
-                if (key === 'notes')
-                    key = 'body';
-                if (key === 'url')
-                    key = 'html_url';
-                setPathOutput(path, key, value);
-            }
-        }
-    }
-    // Paths of all releases that were created, so that they can be passed
-    // to matrix in next step:
-    core.setOutput('paths_released', JSON.stringify(pathsReleased));
-}
-function outputPRs(prs) {
-    prs = prs.filter(pr => pr !== undefined);
-    core.setOutput('prs_created', prs.length > 0);
-    if (prs.length) {
-        core.setOutput('pr', prs[0]);
-        core.setOutput('prs', JSON.stringify(prs));
-    }
-}
-if (require.main === require.cache[eval('__filename')]) {
-    main().catch(err => {
-        core.setFailed(`release-please failed: ${err.message}`);
-    });
-}
-
-})();
-
-module.exports = __webpack_exports__;
+/******/ 	
+/******/ 	// startup
+/******/ 	// Load entry module and return exports
+/******/ 	// This entry module is referenced by other modules so it can't be inlined
+/******/ 	var __webpack_exports__ = __nccwpck_require__(6144);
+/******/ 	module.exports = __webpack_exports__;
+/******/ 	
 /******/ })()
 ;

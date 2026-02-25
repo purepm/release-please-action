@@ -74,6 +74,26 @@ inputs:
     description: 'The version to release as.'
     required: false
     default: ''
+  sign-commits:
+    description: 'if set to true, rewrite release-please branch tip commits as GPG signed'
+    required: false
+    default: false
+  gpg-private-key:
+    description: 'ASCII-armored GPG private key used for signing release-please branch commits'
+    required: false
+    default: ''
+  gpg-passphrase:
+    description: 'Passphrase for the provided GPG private key, if required'
+    required: false
+    default: ''
+  git-committer-name:
+    description: 'Optional committer name used when amending release-please commits'
+    required: false
+    default: ''
+  git-committer-email:
+    description: 'Optional committer email used when amending release-please commits'
+    required: false
+    default: ''
 runs:
   using: 'node20'
   main: 'dist/index.js'

@@ -88,6 +88,11 @@ steps:
 | `changelog-host`           | The proto://host where commits live. Defaults to `${{ github.server_url }}` (usually `https://github.com`)                             |
 | `versioning-strategy`      | The versioning strategy to use. Defaults to `default`                                                                                  |
 | `release-as`               | The version to release as.                                                                                                             |
+| `sign-commits`             | If `true`, rewrite release-please branch tip commits as GPG signed commits after PR creation. Defaults to `false`.                    |
+| `gpg-private-key`          | ASCII-armored GPG private key used when `sign-commits` is enabled.                                                                     |
+| `gpg-passphrase`           | Optional passphrase for `gpg-private-key`.                                                                                             |
+| `git-committer-name`       | Optional committer name used when amending release-please commits for signing.                                                         |
+| `git-committer-email`      | Optional committer email used when amending release-please commits for signing.                                                        |
 
 ## GitHub Credentials
 
@@ -115,6 +120,28 @@ From GitHub's
 You will want to configure a GitHub Actions secret with a
 [Personal Access Token](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/creating-a-personal-access-token)
 if you want GitHub Actions CI checks to run on Release Please PRs.
+
+### Signing release-please branch commits
+
+If you want release-please branch commits to show as GitHub `Verified`, you can enable
+commit signing in this action:
+
+```yaml
+steps:
+  - uses: googleapis/release-please-action@v4
+    with:
+      token: ${{ secrets.MY_RELEASE_PLEASE_TOKEN }}
+      sign-commits: true
+      gpg-private-key: ${{ secrets.RELEASE_PLEASE_GPG_PRIVATE_KEY }}
+      gpg-passphrase: ${{ secrets.RELEASE_PLEASE_GPG_PASSPHRASE }}
+      # optional overrides:
+      git-committer-name: release-please[bot]
+      git-committer-email: release-please[bot]@users.noreply.github.com
+```
+
+When enabled, this action amends and force-pushes the tip commit on each release-please
+branch after PR creation. Ensure your branch protection rules allow force-pushes on those
+release-please branches.
 
 ### Workflow Permissions
 

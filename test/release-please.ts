@@ -419,6 +419,70 @@ describe('release-please-action', () => {
         })
       );
     });
+
+    it('fails when sign-commits is true and gpg-private-key is missing', async () => {
+      restoreEnv = mockInputs({
+        'sign-commits': 'true',
+      });
+      await assert.rejects(action.main(fetch), /gpg-private-key must be provided/);
+    });
+
+    it('signs release-please branch commits when configured', async () => {
+      restoreEnv = mockInputs({
+        'sign-commits': 'true',
+        'gpg-private-key': 'dummy-key-material',
+      });
+      const fakeManifest = sandbox.createStubInstance(Manifest);
+      fakeManifest.createReleases.resolves([]);
+      fakeManifest.createPullRequests.resolves(fixturePrs);
+      sandbox.stub(Manifest, 'fromManifest').resolves(fakeManifest);
+      const signStub = sandbox
+        .stub(action.internals, 'signReleasePleaseBranchCommits')
+        .resolves();
+
+      await action.main(fetch);
+
+      sinon.assert.calledOnce(signStub);
+      sinon.assert.calledWith(
+        signStub,
+        sinon.match({signCommits: true}),
+        fixturePrs
+      );
+    });
+
+    it('does not sign commits when sign-commits is unset', async () => {
+      restoreEnv = mockInputs({});
+      const fakeManifest = sandbox.createStubInstance(Manifest);
+      fakeManifest.createReleases.resolves([]);
+      fakeManifest.createPullRequests.resolves(fixturePrs);
+      sandbox.stub(Manifest, 'fromManifest').resolves(fakeManifest);
+      const signStub = sandbox
+        .stub(action.internals, 'signReleasePleaseBranchCommits')
+        .resolves();
+
+      await action.main(fetch);
+
+      sinon.assert.notCalled(signStub);
+    });
+
+    it('does not sign commits when pull request creation is skipped', async () => {
+      restoreEnv = mockInputs({
+        'sign-commits': 'true',
+        'gpg-private-key': 'dummy-key-material',
+        'skip-github-pull-request': 'true',
+      });
+      const fakeManifest = sandbox.createStubInstance(Manifest);
+      fakeManifest.createReleases.resolves([]);
+      fakeManifest.createPullRequests.resolves(fixturePrs);
+      sandbox.stub(Manifest, 'fromManifest').resolves(fakeManifest);
+      const signStub = sandbox
+        .stub(action.internals, 'signReleasePleaseBranchCommits')
+        .resolves();
+
+      await action.main(fetch);
+
+      sinon.assert.notCalled(signStub);
+    });
   });
 
   describe('outputs', () => {
